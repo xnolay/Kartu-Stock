@@ -56,6 +56,8 @@
         const authError = document.getElementById('auth-error'); const showRegisterBtn = document.getElementById('show-register-btn');
         const showLoginBtn = document.getElementById('show-login-btn'); const logoutBtn = document.getElementById('logout-btn');
         const userEmailDisplay = document.getElementById('user-email-display');
+        const itemSearchInput = document.getElementById('item-search-input');
+        const searchResultsContainer = document.getElementById('search-results-container');
         const mainItemSelector = document.getElementById('main-item-selector');
         const initialStockInput = document.getElementById('initial-stock-input');
         const saveInitialStockBtn = document.getElementById('save-initial-stock-btn');
@@ -78,9 +80,13 @@
                 dbSettingsPath = `/artifacts/${firebaseConfig.appId}/users/${userId}/stock_settings`;
                 dbItemMasterPath = `/artifacts/${firebaseConfig.appId}/public/data/item_master`;
                 authView.classList.add('hidden'); appView.classList.remove('hidden');
+                if (user.email === 'xnolay@gmail.com') { manageItemsBtn.parentElement.classList.remove('hidden'); } 
+                else { manageItemsBtn.parentElement.classList.add('hidden'); }
                 loadInitialData();
             } else {
-                if (unsubscribe) unsubscribe(); userId = null; authView.classList.remove('hidden'); appView.classList.add('hidden');
+                if (unsubscribe) unsubscribe(); userId = null; 
+                manageItemsBtn.parentElement.classList.add('hidden');
+                authView.classList.remove('hidden'); appView.classList.add('hidden');
             }
         });
 
@@ -102,33 +108,55 @@
             try {
                 const querySnapshot = await getDocs(collection(db, dbItemMasterPath));
                 itemMasterData = {};
-                querySnapshot.forEach((doc) => {
-                    itemMasterData[doc.id] = doc.data().items || [];
-                });
-                populateItemDropdowns();
-            } catch (error) {
-                console.error("Error loading item master:", error);
-                alert("Gagal memuat daftar barang. Pastikan aturan Firebase sudah diperbarui.");
-            }
+                querySnapshot.forEach((doc) => { itemMasterData[doc.id] = doc.data().items || []; });
+                populateItemDropdowns(); // Still populate for fallback and data source
+            } catch (error) { console.error("Error loading item master:", error); alert("Gagal memuat daftar barang. Pastikan aturan Firebase sudah diperbarui."); }
         }
 
         function populateItemDropdowns() {
             const itemSelectors = [document.getElementById('main-item-selector'), document.getElementById('form-item-name'), document.querySelector('#edit-form select[name="itemName"]')];
             itemSelectors.forEach(selector => {
-                selector.innerHTML = '<option value="">-- Pilih Nama Barang --</option>'; // Clear existing
+                selector.innerHTML = '<option value="">-- Pilih Nama Barang --</option>';
                 const sortedCategories = Object.keys(itemMasterData).sort();
                 for (const category of sortedCategories) {
-                    const optgroup = document.createElement('optgroup');
-                    optgroup.label = category;
-                    itemMasterData[category].forEach(item => {
-                        const option = document.createElement('option');
-                        option.value = item;
-                        option.textContent = item;
-                        optgroup.appendChild(option);
-                    });
+                    const optgroup = document.createElement('optgroup'); optgroup.label = category;
+                    itemMasterData[category].forEach(item => { const option = document.createElement('option'); option.value = item; option.textContent = item; optgroup.appendChild(option); });
                     selector.appendChild(optgroup);
                 }
             });
+        }
+        
+        function handleSearchInput() {
+            const keyword = itemSearchInput.value.toLowerCase();
+            searchResultsContainer.innerHTML = '';
+            if (keyword.length < 2) {
+                searchResultsContainer.classList.add('hidden');
+                return;
+            }
+
+            const allItems = Object.values(itemMasterData).flat();
+            const matchedItems = allItems.filter(item => item.toLowerCase().includes(keyword)).slice(0, 10); // Limit results
+
+            if (matchedItems.length > 0) {
+                matchedItems.forEach(item => {
+                    const resultEl = document.createElement('div');
+                    resultEl.className = 'p-2 hover:bg-gray-100 cursor-pointer';
+                    resultEl.textContent = item;
+                    resultEl.addEventListener('click', () => selectItemFromSearch(item));
+                    searchResultsContainer.appendChild(resultEl);
+                });
+                searchResultsContainer.classList.remove('hidden');
+            } else {
+                searchResultsContainer.classList.add('hidden');
+            }
+        }
+        
+        function selectItemFromSearch(itemName) {
+            mainItemSelector.value = itemName;
+            document.getElementById('form-item-name').value = itemName;
+            itemSearchInput.value = '';
+            searchResultsContainer.classList.add('hidden');
+            updateDisplay();
         }
 
         function listenToTransactions() {
@@ -160,9 +188,7 @@
             if (!newTransaction.itemName || !newTransaction.date || !newTransaction.quantity) { alert("Tanggal, Nama Barang, dan Jumlah harus diisi."); return; }
             try {
                 await addDoc(collection(db, dbTransactionPath), newTransaction);
-                form.reset();
-                form.date.valueAsDate = new Date();
-                form.itemName.value = mainItemSelector.value;
+                form.reset(); form.date.valueAsDate = new Date(); form.itemName.value = mainItemSelector.value;
             } catch (error) { alert("Gagal menyimpan transaksi."); }
         }
 
@@ -173,8 +199,7 @@
             if (!selectedItem) {
                 cardSaldoAwal.textContent = '-'; cardTotalMasuk.textContent = '-'; cardTotalKeluar.textContent = '-'; cardSaldoAkhir.textContent = '-';
                 transactionTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-6">Pilih barang untuk melihat riwayat stok.</td></tr>';
-                if(stockChart) stockChart.destroy();
-                return;
+                if(stockChart) stockChart.destroy(); return;
             }
             const saldoAwal = itemSettings[selectedItem] || 0;
             const transactionsForItem = allTransactions.filter(t => t.itemName === selectedItem).sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -227,37 +252,25 @@
         }
         async function handleImportData(e) {
             e.preventDefault();
-            const text = importTextarea.value;
-            if (!text.trim()) { alert("Kotak teks kosong."); return; }
-            importStatus.textContent = 'Mengimpor data...';
-            const categories = {};
+            const text = importTextarea.value; if (!text.trim()) { alert("Kotak teks kosong."); return; }
+            importStatus.textContent = 'Mengimpor data...'; const categories = {};
             const lines = text.trim().split('\n');
             for (const line of lines) {
                 const parts = line.split('\t');
                 if (parts.length >= 2) {
-                    const category = parts[0].trim();
-                    const itemName = parts[1].trim();
-                    if (category && itemName) {
-                        if (!categories[category]) categories[category] = [];
-                        categories[category].push(itemName);
-                    }
+                    const category = parts[0].trim(); const itemName = parts[1].trim();
+                    if (category && itemName) { if (!categories[category]) categories[category] = []; categories[category].push(itemName); }
                 }
             }
             if (Object.keys(categories).length === 0) { alert("Format data tidak valid. Pastikan Anda menyalin 2 kolom dari Excel (Kategori dan Nama Barang)."); importStatus.textContent = ''; return; }
             try {
                 const batch = writeBatch(db);
-                for (const categoryName in categories) {
-                    const docRef = doc(db, dbItemMasterPath, categoryName);
-                    batch.set(docRef, { items: categories[categoryName] });
-                }
+                for (const categoryName in categories) { const docRef = doc(db, dbItemMasterPath, categoryName); batch.set(docRef, { items: categories[categoryName] }); }
                 await batch.commit();
                 importStatus.textContent = 'Berhasil! Daftar barang telah diperbarui.';
-                await loadItemMaster(); // Refresh dropdowns
+                await loadItemMaster();
                 setTimeout(() => { importModal.classList.add('hidden'); importForm.reset(); importStatus.textContent = ''; }, 2000);
-            } catch (error) {
-                importStatus.textContent = 'Gagal mengimpor. Cek koneksi dan aturan Firebase.';
-                console.error("Import error:", error);
-            }
+            } catch (error) { importStatus.textContent = 'Gagal mengimpor. Cek koneksi dan aturan Firebase.'; console.error("Import error:", error); }
         }
 
         // --- PDF EXPORT ---
@@ -306,6 +319,7 @@
             showRegisterBtn.addEventListener('click', () => { loginForm.classList.add('hidden'); registerForm.classList.remove('hidden'); });
             showLoginBtn.addEventListener('click', () => { registerForm.classList.add('hidden'); loginForm.classList.remove('hidden'); });
             mainItemSelector.addEventListener('change', updateDisplay);
+            itemSearchInput.addEventListener('input', handleSearchInput);
             saveInitialStockBtn.addEventListener('click', saveInitialStock);
             transactionForm.addEventListener('submit', handleFormSubmit);
             document.getElementById('edit-form').addEventListener('submit', handleEditFormSubmit);
@@ -320,6 +334,11 @@
             transactionTableBody.addEventListener('click', (e) => {
                 if(e.target.closest('.edit-btn')) openEditModal(e.target.closest('.edit-btn').dataset.id);
                 if(e.target.closest('.delete-btn')) openDeleteModal(e.target.closest('.delete-btn').dataset.id);
+            });
+             document.addEventListener('click', (e) => {
+                if (!searchResultsContainer.contains(e.target) && e.target !== itemSearchInput) {
+                    searchResultsContainer.classList.add('hidden');
+                }
             });
         });
     </script>
@@ -359,11 +378,20 @@
         </header>
 
         <section class="card p-4 mb-8">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-end">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
                 <div>
-                    <label for="main-item-selector" class="block text-sm font-medium text-gray-700 mb-1">Pilih Barang untuk Dilihat</label>
-                    <select id="main-item-selector" class="form-select">
-                        <option value="">-- Pilih Nama Barang --</option>
+                    <label for="item-search-input" class="block text-sm font-medium text-gray-700 mb-1">Cari Nama Barang</label>
+                    <div class="relative">
+                        <input type="text" id="item-search-input" class="form-input" placeholder="Ketik keyword di sini...">
+                        <div id="search-results-container" class="hidden absolute z-10 w-full bg-white border border-gray-300 rounded-md mt-1 max-h-60 overflow-y-auto shadow-lg">
+                            <!-- Search results will be injected here -->
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <label for="main-item-selector" class="block text-sm font-medium text-gray-700 mb-1">Barang Terpilih</label>
+                    <select id="main-item-selector" class="form-select bg-gray-100">
+                        <option value="">-- Belum ada barang dipilih --</option>
                     </select>
                 </div>
                 <div class="flex items-center gap-4">
@@ -376,7 +404,7 @@
                     </div>
                     <span id="save-status" class="text-sm text-green-600 pt-6"></span>
                 </div>
-                 <div>
+                 <div class="hidden">
                     <button id="manage-items-btn" class="btn btn-secondary w-full">Kelola Daftar Barang</button>
                 </div>
             </div>
@@ -394,7 +422,7 @@
                 <section class="lg:col-span-1 card p-6">
                     <h2 class="text-xl font-bold mb-4">Tambah Transaksi Stok</h2>
                     <form id="transaction-form" class="space-y-4">
-                        <div><label for="form-item-name" class="block text-sm font-medium text-gray-700">Nama Barang</label><select id="form-item-name" name="itemName" class="form-select"><option value="">-- Pilih Nama Barang --</option></select></div>
+                        <div><label for="form-item-name" class="block text-sm font-medium text-gray-700">Nama Barang</label><select id="form-item-name" name="itemName" class="form-select bg-gray-100"><option value="">-- Pilih dari pencarian --</option></select></div>
                         <div><label for="date" class="block text-sm font-medium text-gray-700">Tanggal</label><input type="date" id="date" name="date" class="form-input" required></div>
                         <div><label for="invoice" class="block text-sm font-medium text-gray-700">Invoice/SJ</label><input type="text" id="invoice" name="invoice" class="form-input" placeholder="Nomor Invoice/Surat Jalan"></div>
                         <div><label for="customerName" class="block text-sm font-medium text-gray-700">Nama Customer</label><input type="text" id="customerName" name="customerName" class="form-input" placeholder="Nama Customer"></div>
@@ -438,7 +466,6 @@
             </form>
         </div>
     </div>
-
     <div id="edit-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 z-50 flex items-center justify-center p-4">
         <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6">
             <h3 class="text-lg font-medium text-gray-900 mb-4">Edit Transaksi</h3>
