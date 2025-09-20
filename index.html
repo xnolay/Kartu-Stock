@@ -14,14 +14,8 @@
     <script type="module">
         // Firebase SDK
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { 
-            getAuth, 
-            onAuthStateChanged,
-            createUserWithEmailAndPassword,
-            signInWithEmailAndPassword,
-            signOut
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, setDoc, getDoc, query, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, setDoc, getDoc, query, writeBatch, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // GANTI BAGIAN DI BAWAH INI DENGAN KONFIGURASI DARI PROYEK FIREBASE ANDA
         const firebaseConfig = {
@@ -52,43 +46,28 @@
         const db = getFirestore(app);
         
         // --- GLOBAL APP STATE ---
-        let allTransactions = [];
-        let stockChart;
-        let userId = null;
-        let currentTransactionId = null;
-        let dbTransactionPath = '';
-        let dbSettingsPath = '';
-        let unsubscribe = null; 
-        let itemSettings = {};
+        let allTransactions = []; let stockChart; let userId = null; let currentTransactionId = null;
+        let dbTransactionPath = ''; let dbSettingsPath = ''; let dbItemMasterPath = '';
+        let unsubscribe = null; let itemSettings = {}; let itemMasterData = {};
         
         // --- DOM ELEMENTS ---
-        const authView = document.getElementById('auth-view');
-        const appView = document.getElementById('app-view');
-        const loginForm = document.getElementById('login-form');
-        const registerForm = document.getElementById('register-form');
-        const authError = document.getElementById('auth-error');
-        const showRegisterBtn = document.getElementById('show-register-btn');
-        const showLoginBtn = document.getElementById('show-login-btn');
-        const logoutBtn = document.getElementById('logout-btn');
+        const authView = document.getElementById('auth-view'); const appView = document.getElementById('app-view');
+        const loginForm = document.getElementById('login-form'); const registerForm = document.getElementById('register-form');
+        const authError = document.getElementById('auth-error'); const showRegisterBtn = document.getElementById('show-register-btn');
+        const showLoginBtn = document.getElementById('show-login-btn'); const logoutBtn = document.getElementById('logout-btn');
         const userEmailDisplay = document.getElementById('user-email-display');
-        
         const mainItemSelector = document.getElementById('main-item-selector');
         const initialStockInput = document.getElementById('initial-stock-input');
         const saveInitialStockBtn = document.getElementById('save-initial-stock-btn');
         const saveStatusEl = document.getElementById('save-status');
-
-        const cardSaldoAwal = document.getElementById('card-saldo-awal');
-        const cardTotalMasuk = document.getElementById('card-total-masuk');
-        const cardTotalKeluar = document.getElementById('card-total-keluar');
-        const cardSaldoAkhir = document.getElementById('card-saldo-akhir');
-        
-        const transactionForm = document.getElementById('transaction-form');
-        const transactionTableBody = document.getElementById('transaction-table-body');
-        const printBtn = document.getElementById('print-btn');
-        const exportCsvBtn = document.getElementById('export-csv-btn');
-
-        const editModal = document.getElementById('edit-modal');
-        const deleteModal = document.getElementById('delete-modal');
+        const cardSaldoAwal = document.getElementById('card-saldo-awal'); const cardTotalMasuk = document.getElementById('card-total-masuk');
+        const cardTotalKeluar = document.getElementById('card-total-keluar'); const cardSaldoAkhir = document.getElementById('card-saldo-akhir');
+        const transactionForm = document.getElementById('transaction-form'); const transactionTableBody = document.getElementById('transaction-table-body');
+        const printHistoryBtn = document.getElementById('print-history-btn'); const printSummaryBtn = document.getElementById('print-summary-btn');
+        const manageItemsBtn = document.getElementById('manage-items-btn'); const importModal = document.getElementById('import-modal');
+        const importForm = document.getElementById('import-form'); const importTextarea = document.getElementById('import-textarea');
+        const importStatus = document.getElementById('import-status'); const cancelImportBtn = document.getElementById('cancel-import-btn');
+        const editModal = document.getElementById('edit-modal'); const deleteModal = document.getElementById('delete-modal');
 
         // --- AUTHENTICATION ---
         onAuthStateChanged(auth, user => {
@@ -97,14 +76,11 @@
                 userEmailDisplay.textContent = user.email;
                 dbTransactionPath = `/artifacts/${firebaseConfig.appId}/users/${userId}/stock_transactions`;
                 dbSettingsPath = `/artifacts/${firebaseConfig.appId}/users/${userId}/stock_settings`;
-                authView.classList.add('hidden');
-                appView.classList.remove('hidden');
+                dbItemMasterPath = `/artifacts/${firebaseConfig.appId}/public/data/item_master`;
+                authView.classList.add('hidden'); appView.classList.remove('hidden');
                 loadInitialData();
             } else {
-                if (unsubscribe) unsubscribe();
-                userId = null;
-                authView.classList.remove('hidden');
-                appView.classList.add('hidden');
+                if (unsubscribe) unsubscribe(); userId = null; authView.classList.remove('hidden'); appView.classList.add('hidden');
             }
         });
 
@@ -115,10 +91,44 @@
 
         // --- DATA HANDLING ---
         async function loadInitialData() {
+            await loadItemMaster();
             const settingsDocRef = doc(db, dbSettingsPath, 'items');
             const settingsSnap = await getDoc(settingsDocRef);
             if (settingsSnap.exists()) itemSettings = settingsSnap.data();
             listenToTransactions();
+        }
+        
+        async function loadItemMaster() {
+            try {
+                const querySnapshot = await getDocs(collection(db, dbItemMasterPath));
+                itemMasterData = {};
+                querySnapshot.forEach((doc) => {
+                    itemMasterData[doc.id] = doc.data().items || [];
+                });
+                populateItemDropdowns();
+            } catch (error) {
+                console.error("Error loading item master:", error);
+                alert("Gagal memuat daftar barang. Pastikan aturan Firebase sudah diperbarui.");
+            }
+        }
+
+        function populateItemDropdowns() {
+            const itemSelectors = [document.getElementById('main-item-selector'), document.getElementById('form-item-name'), document.querySelector('#edit-form select[name="itemName"]')];
+            itemSelectors.forEach(selector => {
+                selector.innerHTML = '<option value="">-- Pilih Nama Barang --</option>'; // Clear existing
+                const sortedCategories = Object.keys(itemMasterData).sort();
+                for (const category of sortedCategories) {
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = category;
+                    itemMasterData[category].forEach(item => {
+                        const option = document.createElement('option');
+                        option.value = item;
+                        option.textContent = item;
+                        optgroup.appendChild(option);
+                    });
+                    selector.appendChild(optgroup);
+                }
+            });
         }
 
         function listenToTransactions() {
@@ -131,8 +141,7 @@
         }
 
         async function saveInitialStock() {
-            const selectedItem = mainItemSelector.value;
-            if (!selectedItem) return;
+            const selectedItem = mainItemSelector.value; if (!selectedItem) return;
             const newInitialStock = parseInt(initialStockInput.value, 10) || 0;
             saveStatusEl.textContent = 'Menyimpan...';
             try {
@@ -147,114 +156,68 @@
         async function handleFormSubmit(e) {
             e.preventDefault();
             const form = e.target;
-            const newTransaction = {
-                date: form.date.value,
-                itemName: form.itemName.value,
-                invoice: form.invoice.value,
-                customerName: form.customerName.value.trim(),
-                description: form.description.value.trim(),
-                type: form.type.value,
-                quantity: parseInt(form.quantity.value, 10),
-                createdAt: new Date().toISOString()
-            };
+            const newTransaction = { date: form.date.value, itemName: form.itemName.value, invoice: form.invoice.value, customerName: form.customerName.value.trim(), description: form.description.value.trim(), type: form.type.value, quantity: parseInt(form.quantity.value, 10), createdAt: new Date().toISOString() };
             if (!newTransaction.itemName || !newTransaction.date || !newTransaction.quantity) { alert("Tanggal, Nama Barang, dan Jumlah harus diisi."); return; }
             try {
                 await addDoc(collection(db, dbTransactionPath), newTransaction);
                 form.reset();
                 form.date.valueAsDate = new Date();
-                form.itemName.value = mainItemSelector.value; // Resync after reset
+                form.itemName.value = mainItemSelector.value;
             } catch (error) { alert("Gagal menyimpan transaksi."); }
         }
 
         // --- UI UPDATE & DISPLAY ---
         function updateDisplay() {
             const selectedItem = mainItemSelector.value;
-            document.getElementById('form-item-name').value = selectedItem; // Sync form dropdown
-
+            document.getElementById('form-item-name').value = selectedItem;
             if (!selectedItem) {
                 cardSaldoAwal.textContent = '-'; cardTotalMasuk.textContent = '-'; cardTotalKeluar.textContent = '-'; cardSaldoAkhir.textContent = '-';
-                transactionTableBody.innerHTML = '<tr><td colspan="7" class="text-center py-6">Pilih barang untuk melihat riwayat stok.</td></tr>';
+                transactionTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-6">Pilih barang untuk melihat riwayat stok.</td></tr>';
                 if(stockChart) stockChart.destroy();
                 return;
             }
-
             const saldoAwal = itemSettings[selectedItem] || 0;
             const transactionsForItem = allTransactions.filter(t => t.itemName === selectedItem).sort((a, b) => new Date(a.date) - new Date(b.date));
             let totalMasuk = 0, totalKeluar = 0, runningBalance = saldoAwal;
-            
             transactionTableBody.innerHTML = '';
             transactionsForItem.forEach(t => {
-                if (t.type === 'masuk') { totalMasuk += t.quantity; runningBalance += t.quantity; } 
-                else { totalKeluar += t.quantity; runningBalance -= t.quantity; }
-                const row = document.createElement('tr');
-                row.className = 'bg-white border-b';
-                row.innerHTML = `
-                    <td class="py-4 px-6">${new Date(t.date).toLocaleDateString('id-ID')}</td>
-                    <td class="py-4 px-6">${t.invoice || '-'}</td>
-                    <td class="py-4 px-6">${t.customerName || '-'}</td>
-                    <td class="py-4 px-6">${t.description || '-'}</td>
-                    <td class="py-4 px-6 text-green-600">${t.type === 'masuk' ? t.quantity : '-'}</td>
-                    <td class="py-4 px-6 text-red-600">${t.type === 'keluar' ? t.quantity : '-'}</td>
-                    <td class="py-4 px-6 font-medium">${runningBalance}</td>
-                    <td class="py-4 px-6 text-center"><button data-id="${t.id}" class="edit-btn text-blue-600 p-1">✏️</button><button data-id="${t.id}" class="delete-btn text-red-600 p-1">🗑️</button></td>
-                `;
+                if (t.type === 'masuk') { totalMasuk += t.quantity; runningBalance += t.quantity; } else { totalKeluar += t.quantity; runningBalance -= t.quantity; }
+                const row = document.createElement('tr'); row.className = 'bg-white border-b';
+                row.innerHTML = `<td class="py-4 px-6">${new Date(t.date).toLocaleDateString('id-ID')}</td><td class="py-4 px-6">${t.invoice || '-'}</td><td class="py-4 px-6">${t.customerName || '-'}</td><td class="py-4 px-6">${t.description || '-'}</td><td class="py-4 px-6 text-green-600">${t.type === 'masuk' ? t.quantity : '-'}</td><td class="py-4 px-6 text-red-600">${t.type === 'keluar' ? t.quantity : '-'}</td><td class="py-4 px-6 font-medium">${runningBalance}</td><td class="py-4 px-6 text-center"><button data-id="${t.id}" class="edit-btn text-blue-600 p-1">✏️</button><button data-id="${t.id}" class="delete-btn text-red-600 p-1">🗑️</button></td>`;
                 transactionTableBody.appendChild(row);
             });
             const rows = Array.from(transactionTableBody.querySelectorAll('tr')).reverse();
             transactionTableBody.innerHTML = '';
             rows.forEach(row => transactionTableBody.appendChild(row));
-
             cardSaldoAwal.textContent = saldoAwal; cardTotalMasuk.textContent = totalMasuk; cardTotalKeluar.textContent = totalKeluar;
             cardSaldoAkhir.textContent = saldoAwal + totalMasuk - totalKeluar;
             initialStockInput.value = saldoAwal;
             updateChart(transactionsForItem, saldoAwal);
         }
-
         function updateChart(data, saldoAwal) {
-            const ctx = document.getElementById('stock-chart').getContext('2d');
-            if (stockChart) stockChart.destroy();
+            const ctx = document.getElementById('stock-chart').getContext('2d'); if (stockChart) stockChart.destroy();
             let runningBalance = saldoAwal;
-            const chartData = data.map(t => {
-                runningBalance += (t.type === 'masuk' ? t.quantity : -t.quantity);
-                return { x: new Date(t.date).getTime(), y: runningBalance };
-            });
+            const chartData = data.map(t => { runningBalance += (t.type === 'masuk' ? t.quantity : -t.quantity); return { x: new Date(t.date).getTime(), y: runningBalance }; });
             stockChart = new Chart(ctx, { type: 'line', data: { datasets: [{ label: 'Stok Fisik', data: chartData, borderColor: '#3B82F6', fill: true }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'day' } }, y: { beginAtZero: true } } } });
         }
         
-        // --- EDIT & DELETE MODALS ---
+        // --- MODALS (EDIT, DELETE, IMPORT) ---
         function openEditModal(transactionId) {
-            const transaction = allTransactions.find(t => t.id === transactionId);
-            if (!transaction) return;
-            currentTransactionId = transactionId;
-            const form = document.getElementById('edit-form');
-            form.date.value = transaction.date;
-            form.itemName.value = transaction.itemName;
-            form.invoice.value = transaction.invoice || '';
-            form.customerName.value = transaction.customerName || '';
-            form.description.value = transaction.description || '';
-            form.type.value = transaction.type;
-            form.quantity.value = transaction.quantity;
-            editModal.classList.remove('hidden');
+            const transaction = allTransactions.find(t => t.id === transactionId); if (!transaction) return;
+            currentTransactionId = transactionId; const form = document.getElementById('edit-form');
+            form.date.value = transaction.date; form.itemName.value = transaction.itemName;
+            form.invoice.value = transaction.invoice || ''; form.customerName.value = transaction.customerName || '';
+            form.description.value = transaction.description || ''; form.type.value = transaction.type;
+            form.quantity.value = transaction.quantity; editModal.classList.remove('hidden');
         }
         function closeEditModal() { editModal.classList.add('hidden'); currentTransactionId = null; }
-        
         async function handleEditFormSubmit(e) {
-            e.preventDefault();
-            if (!currentTransactionId) return;
+            e.preventDefault(); if (!currentTransactionId) return;
             const form = e.target;
-            const updatedData = {
-                date: form.date.value,
-                itemName: form.itemName.value,
-                invoice: form.invoice.value,
-                customerName: form.customerName.value.trim(),
-                description: form.description.value.trim(),
-                type: form.type.value,
-                quantity: parseInt(form.quantity.value, 10)
-            };
+            const updatedData = { date: form.date.value, itemName: form.itemName.value, invoice: form.invoice.value, customerName: form.customerName.value.trim(), description: form.description.value.trim(), type: form.type.value, quantity: parseInt(form.quantity.value, 10) };
             try { await updateDoc(doc(db, dbTransactionPath, currentTransactionId), updatedData); closeEditModal(); } 
             catch (error) { alert("Gagal memperbarui transaksi."); }
         }
-
         function openDeleteModal(transactionId) { currentTransactionId = transactionId; deleteModal.classList.remove('hidden'); }
         function closeDeleteModal() { deleteModal.classList.add('hidden'); currentTransactionId = null; }
         async function handleDeleteConfirmed() {
@@ -262,11 +225,44 @@
             try { await deleteDoc(doc(db, dbTransactionPath, currentTransactionId)); closeDeleteModal(); }
             catch (error) { alert("Gagal menghapus transaksi."); }
         }
+        async function handleImportData(e) {
+            e.preventDefault();
+            const text = importTextarea.value;
+            if (!text.trim()) { alert("Kotak teks kosong."); return; }
+            importStatus.textContent = 'Mengimpor data...';
+            const categories = {};
+            const lines = text.trim().split('\n');
+            for (const line of lines) {
+                const parts = line.split('\t');
+                if (parts.length >= 2) {
+                    const category = parts[0].trim();
+                    const itemName = parts[1].trim();
+                    if (category && itemName) {
+                        if (!categories[category]) categories[category] = [];
+                        categories[category].push(itemName);
+                    }
+                }
+            }
+            if (Object.keys(categories).length === 0) { alert("Format data tidak valid. Pastikan Anda menyalin 2 kolom dari Excel (Kategori dan Nama Barang)."); importStatus.textContent = ''; return; }
+            try {
+                const batch = writeBatch(db);
+                for (const categoryName in categories) {
+                    const docRef = doc(db, dbItemMasterPath, categoryName);
+                    batch.set(docRef, { items: categories[categoryName] });
+                }
+                await batch.commit();
+                importStatus.textContent = 'Berhasil! Daftar barang telah diperbarui.';
+                await loadItemMaster(); // Refresh dropdowns
+                setTimeout(() => { importModal.classList.add('hidden'); importForm.reset(); importStatus.textContent = ''; }, 2000);
+            } catch (error) {
+                importStatus.textContent = 'Gagal mengimpor. Cek koneksi dan aturan Firebase.';
+                console.error("Import error:", error);
+            }
+        }
 
-        // --- PDF & CSV EXPORT ---
-        function generatePDF() {
-            const selectedItem = mainItemSelector.value;
-            if (!selectedItem) { alert("Pilih barang terlebih dahulu."); return; }
+        // --- PDF EXPORT ---
+        function generateItemHistoryPDF() {
+            const selectedItem = mainItemSelector.value; if (!selectedItem) { alert("Pilih barang terlebih dahulu."); return; }
             const { jsPDF } = window.jspdf; const doc = new jsPDF();
             const saldoAwal = itemSettings[selectedItem] || 0;
             const transactionsForItem = allTransactions.filter(t => t.itemName === selectedItem).sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -283,6 +279,24 @@
             doc.setFontSize(16); doc.text('Laporan Kartu Stok Fisik Barang', 14, 20); doc.setFontSize(12); doc.text(`Nama Barang: ${selectedItem}`, 14, 28);
             doc.autoTable({ head, body, startY: 35, theme: 'grid' }); doc.save(`kartu-stok-${selectedItem.replace(/ /g, '_')}.pdf`);
         }
+        function generateStockSummaryPDF() {
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            const allItemNames = Object.values(itemMasterData).flat();
+            const stockSummary = [];
+            allItemNames.forEach(itemName => {
+                const saldoAwal = itemSettings[itemName] || 0;
+                const totalMasuk = allTransactions.filter(t => t.itemName === itemName && t.type === 'masuk').reduce((sum, t) => sum + t.quantity, 0);
+                const totalKeluar = allTransactions.filter(t => t.itemName === itemName && t.type === 'keluar').reduce((sum, t) => sum + t.quantity, 0);
+                const saldoAkhir = saldoAwal + totalMasuk - totalKeluar;
+                if (saldoAkhir > 0) stockSummary.push({ name: itemName, stock: saldoAkhir });
+            });
+            stockSummary.sort((a, b) => a.name.localeCompare(b.name));
+            const head = [['Nama Barang', 'Sisa Stok Akhir']];
+            const body = stockSummary.map(item => [ item.name, { content: item.stock, styles: { halign: 'right' } } ]);
+            doc.setFontSize(16); doc.text('Laporan Sisa Stok Semua Barang', 14, 20);
+            doc.setFontSize(11); doc.text(`Per tanggal: ${new Date().toLocaleDateString('id-ID')}`, 14, 28);
+            doc.autoTable({ head, body, startY: 35, theme: 'grid' }); doc.save('laporan-sisa-stok.pdf');
+        }
 
         // --- EVENT LISTENERS ---
         document.addEventListener('DOMContentLoaded', () => {
@@ -298,7 +312,11 @@
             document.getElementById('cancel-edit-btn').addEventListener('click', closeEditModal);
             document.getElementById('confirm-delete-btn').addEventListener('click', handleDeleteConfirmed);
             document.getElementById('cancel-delete-btn').addEventListener('click', closeDeleteModal);
-            printBtn.addEventListener('click', generatePDF);
+            printHistoryBtn.addEventListener('click', generateItemHistoryPDF);
+            printSummaryBtn.addEventListener('click', generateStockSummaryPDF);
+            manageItemsBtn.addEventListener('click', () => importModal.classList.remove('hidden'));
+            cancelImportBtn.addEventListener('click', () => importModal.classList.add('hidden'));
+            importForm.addEventListener('submit', handleImportData);
             transactionTableBody.addEventListener('click', (e) => {
                 if(e.target.closest('.edit-btn')) openEditModal(e.target.closest('.edit-btn').dataset.id);
                 if(e.target.closest('.delete-btn')) openDeleteModal(e.target.closest('.delete-btn').dataset.id);
@@ -341,7 +359,7 @@
         </header>
 
         <section class="card p-4 mb-8">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-end">
                 <div>
                     <label for="main-item-selector" class="block text-sm font-medium text-gray-700 mb-1">Pilih Barang untuk Dilihat</label>
                     <select id="main-item-selector" class="form-select">
@@ -357,6 +375,9 @@
                         <button id="save-initial-stock-btn" class="btn btn-primary btn-sm">Simpan</button>
                     </div>
                     <span id="save-status" class="text-sm text-green-600 pt-6"></span>
+                </div>
+                 <div>
+                    <button id="manage-items-btn" class="btn btn-secondary w-full">Kelola Daftar Barang</button>
                 </div>
             </div>
         </section>
@@ -389,92 +410,55 @@
             </div>
             
             <section class="card p-6">
-                <div class="flex flex-wrap justify-between items-center gap-4 mb-4"><h2 class="text-xl font-bold">Riwayat Transaksi Barang Terpilih</h2><div class="flex flex-wrap items-center gap-4"><button id="print-btn" class="btn btn-secondary">Cetak PDF</button></div></div>
+                <div class="flex flex-wrap justify-between items-center gap-4 mb-4">
+                    <h2 class="text-xl font-bold">Riwayat Transaksi Barang Terpilih</h2>
+                    <div class="flex flex-wrap items-center gap-4">
+                        <button id="print-history-btn" class="btn btn-secondary">Cetak Riwayat Barang</button>
+                        <button id="print-summary-btn" class="btn btn-primary">Cetak Sisa Stok</button>
+                    </div>
+                </div>
                 <div class="overflow-x-auto"><table class="w-full text-sm text-left text-gray-500"><thead class="text-xs text-gray-700 uppercase bg-gray-50"><tr><th scope="col" class="py-3 px-6">Tanggal</th><th scope="col" class="py-3 px-6">Invoice/SJ</th><th scope="col" class="py-3 px-6">Customer</th><th scope="col" class="py-3 px-6">Keterangan</th><th scope="col" class="py-3 px-6">Masuk</th><th scope="col" class="py-3 px-6">Keluar</th><th scope="col" class="py-3 px-6">Saldo</th><th scope="col" class="py-3 px-6">Aksi</th></tr></thead><tbody id="transaction-table-body"></tbody></table></div>
             </section>
         </main>
     </div>
 
-    <!-- Edit Modal -->
+    <!-- Modals -->
+    <div id="import-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Impor Daftar Barang dari Excel</h3>
+            <p class="text-sm text-gray-600 mb-2">Salin 2 kolom (Kolom A: Kategori, Kolom B: Nama Barang) dari file Excel Anda, lalu tempel di bawah ini.</p>
+            <p class="text-xs text-gray-500 mb-4">Catatan: Proses ini akan menimpa daftar barang yang ada.</p>
+            <form id="import-form">
+                <textarea id="import-textarea" rows="10" class="form-input w-full" placeholder="Tempel data dari Excel di sini..."></textarea>
+                <div class="flex justify-end items-center gap-4 mt-4">
+                    <span id="import-status" class="text-sm"></span>
+                    <button type="button" id="cancel-import-btn" class="btn btn-secondary">Batal</button>
+                    <button type="submit" class="btn btn-primary">Impor Data</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div id="edit-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 z-50 flex items-center justify-center p-4">
         <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6">
             <h3 class="text-lg font-medium text-gray-900 mb-4">Edit Transaksi</h3>
             <form id="edit-form" class="space-y-4">
                 <input type="hidden" name="id">
-                <div><label for="edit-date" class="block text-sm">Tanggal</label><input type="date" name="date" class="form-input" required></div>
-                <div><label for="edit-itemName" class="block text-sm">Nama Barang</label><select name="itemName" class="form-select" disabled></select></div>
-                <div><label for="edit-invoice" class="block text-sm">Invoice/SJ</label><input type="text" name="invoice" class="form-input"></div>
-                <div><label for="edit-customerName" class="block text-sm">Nama Customer</label><input type="text" name="customerName" class="form-input"></div>
-                <div><label for="edit-description" class="block text-sm">Keterangan</label><input type="text" name="description" class="form-input"></div>
-                <div><label for="edit-type" class="block text-sm">Tipe</label><select name="type" class="form-select"><option value="masuk">Barang Masuk</option><option value="keluar">Barang Keluar</option></select></div>
-                <div><label for="edit-quantity" class="block text-sm">Jumlah</label><input type="number" name="quantity" class="form-input" required min="1"></div>
+                <div><label class="block text-sm">Tanggal</label><input type="date" name="date" class="form-input" required></div>
+                <div><label class="block text-sm">Nama Barang</label><select name="itemName" class="form-select" disabled></select></div>
+                <div><label class="block text-sm">Invoice/SJ</label><input type="text" name="invoice" class="form-input"></div>
+                <div><label class="block text-sm">Nama Customer</label><input type="text" name="customerName" class="form-input"></div>
+                <div><label class="block text-sm">Keterangan</label><input type="text" name="description" class="form-input"></div>
+                <div><label class="block text-sm">Tipe</label><select name="type" class="form-select"><option value="masuk">Barang Masuk</option><option value="keluar">Barang Keluar</option></select></div>
+                <div><label class="block text-sm">Jumlah</label><input type="number" name="quantity" class="form-input" required min="1"></div>
                 <div class="flex justify-end gap-3 pt-4"><button type="button" id="cancel-edit-btn" class="btn btn-secondary">Batal</button><button type="submit" class="btn btn-primary">Simpan</button></div>
             </form>
         </div>
     </div>
-    <!-- Delete Modal -->
     <div id="delete-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 z-50 flex items-center justify-center p-4">
         <div class="relative bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
             <h3 class="text-lg font-medium text-gray-900">Konfirmasi Hapus</h3><p class="mt-2 text-sm text-gray-600">Apakah Anda yakin ingin menghapus transaksi ini?</p><div class="flex justify-end gap-3 pt-4 mt-4"><button type="button" id="cancel-delete-btn" class="btn btn-secondary">Batal</button><button type="button" id="confirm-delete-btn" class="btn btn-danger">Ya, Hapus</button></div>
         </div>
     </div>
-    
-    <script>
-        // Populate dropdowns with the extensive item list
-        document.addEventListener('DOMContentLoaded', () => {
-            const itemSelectors = [document.getElementById('main-item-selector'), document.getElementById('form-item-name'), document.querySelector('#edit-form select[name="itemName"]')];
-            const itemData = {
-                "COUGAR PC CASE": ["Cougar case AIRFACE 180 White", "CASE AIRFACE ECO RGB", "Case AIRFACE ECO RGB White", "CASE AIRFACE RGB Black", "CASE AIRFACE RGB White", "CASE ARCHON 2 MESH RGB(Black)", "CASE ARCHON 2 MESH RGB(White)", "CASE ARCHON 2 RGB(Black)", "CASE ARCHON 2 RGB(White)", "CASE BLAZER / MID TOWER", "CASE BLAZER ESSENCE", "CASE CONQUER", "CASE CONQUER  2", "CASE CRATUS", "CASE DUOFACE RGB White", "CASE DARK BLADER-G", "CASE DARK BLADER-S", "CASE DarkBlader X7(Midnight Green)", "CASE DarkBlader X5 (Translucent Black)", "CASE DarkBlader X7(Translucent Black)", "CASE DUOFACE PRO RGB", "CASE DUOFACE PRO RGB White", "CASE DUOFACE RGB BLACK", "CASE DUST 2 - DESSERT SAND   / MINI-ITX", "CASE DUST 2 - IRON GREY / MINI-ITX", "CASE FV150 RGB BLACK", "CASE FV150 RGB PINK", "CASE FV150 RGB WHITE", "CASE FV270 RGB BLACK", "CASE FV270 RGB WHITE", "CASE GEMINI M (IRON GRAY)", "CASE GEMINI T PRO", "CASE MX440 MESH RGB", "CASE MG120-G", "CASE MG140 Air RGB(White)", "CASE MG140 RGB Iron Gray", "CASE MX220 RGB BLACK", "CASE MX220 RGB WHITE", "CASE MX330-G PRO", "CASE  MX360 RGB", "CASE MX430 AIR RGB  (BLACK)", "CASE MX430 AIR RGB  (WHITE)", "CASE MX430 MESH RGB  (BLACK)", "CASE MX600 BLACK", "CASE MX600 MINI RGB Black", "CASE MX600 MINI RGB White", "CASE MX600 WHITE", "CASE MX660-T RGB", "CASE MX670 RGB", "CASE PANZER EVO RGB", "CASE PANZER MAX", "CASE QBX", "CASE UNIFACE MINI Black + 1x FAN 120mm BLACK", "CASE UNIFACE MINI RGB Black", "CASE UNIFACE MINI RGB White", "CASE UNIFACE WHITE + 1x FAN 120MM ARGB", "CASE UNIFACE MINI WHITE+ 1x FAN 120MM", "CASE UNIFACE RGB Black", "CASE UNIFACE RGB WHITE"],
-                "COUGAR POWER SUPPLIES": ["Cougar PSU ATLAS 550", "Cougar PSU ATLAS 650", "COUGAR PSU ATLAS 750", "Cougar PSU AURIC750", "Cougar PSU GEC-650 80+ Gold", "Cougar  PSU GEM1050", "Cougar  PSU GEM1200", "Cougar PSU GEX X2 1000 WATT", "Cougar PSU GEX X2 850", "Cougar PSU GEX1050", "Cougar PSU GEX 650", "Cougar PSU GEX750", "GEX 750 SNOW", "Cougar PSU GEX850", "Cougar PSU GEX PRO 650", "Cougar PSU GEX PRO 750", "Cougar PSU GEX PRO 850", "Cougar PSU GLE 1000", "Cougar PSU GLE 1200", "Cougar power GR 750", "Cougar power GR 850", "Cougar PSU GX-F 550", "Cougar PSU GX-S550", "Cougar PSU HEC450", "Cougar PSU POLAR1050", "Cougar PSU POLAR1200", "Cougar PSU POLAR X2 1200W", "Cougar power SC550", "Cougar PSU STC 500", "Cougar PSU STC600", "Cougar PSU STC 650", "Cougar PSU VTE X2 750", "Cougar PSU VTEX2 ARGB750", "Cougar PSU VTK500", "Cougar PSU VTK550", "Cougar PSU XTC 400", "Cougar PSU XTC 500", "Cougar PSU XTC550", "Cougar PSU XTC 600", "Cougar PSU XTC ARGB 550", "Cougar PSU XTC ARGB 650"],
-                "COUGAR COOLING FAN": ["COUGAR FAN AQUA 240 ARGB   LIQUID COOLER", "COUGAR FAN AQUA 280 ARGB   LIQUID COOLER", "COUGAR FAN AQUA 360 ARGB   LIQUID COOLER", "COUGAR COOLING AIR  FORZA 50", "Cougar air cooler FORZA 50 ESSENTIAL", "Cougar Air cooling FORZA 85", "Cougar air cooler FORZA 85 ESSENTIAL", "Cougar air cooler FORZA 135", "Cougar FAN APOLAR 120 ARGB BLACK (3 FAN PACKAGE)", "Cougar fan APOLAR 120 ARGB Black(Single Pack)", "Cougar FAN APOLAR 120 ARGB WHITE (SINGLE PACKAGE)", "Cougar FAN APOLAR 120 ARGB WHITE (3 FAN PACKAGE)", "COUGAR FAN CFD 12cm Green LED", "COUGAR FAN CF-D14HB-Green", "COUGAR FAN MHP 120 ARGB (SINGLE PACKAGE)", "COUGAR FAN MHP120   (SINGLE PACKAGE)", "COUGAR FAN MHP120   ( 3x FAN ) KIT", "COUGAR WATER COOLING POSEIDON GT240", "Cougar liquid cooling  HELOR 240", "Cougar liquid cooling HELOR 360", "Cougar liquid cooling POSEIDON ELITE ARGB 240", "Cougar liquid cooling POSEIDON ELITE ARGB 240 White", "Cougar liquid cooling POSEIDON ELITE ARGB 360", "Cougar liquid cooling POSEIDON ELITE ARGB 360 White", "Cougar liquid cooling  Poseidon T5 240 (White)", "Cougar liquid cooling  Poseidon T5 240 (Black)", "Cougar liquid cooling  Poseidon T5 360 (White)", "Controller Fan RGB MODULE FOR  Cougar case", "Fan RGB Cougar JR120 for Case Uniface Black", "Cougar Fan VORTEX VX120 PWM HDB ARGB  (3x Fan)  kit"],
-                "COUGAR PERIPHERALS": ["Cougar Headset ATTILA", "HEADSET IMMERSA Ti EX", "COUGAR HEADSET OMNES ESSENTIAL", "COUGAR HEADSET DIVE", "Cougar Headset Immersa Essential Blue", "Cougar Headset Phontum Essential Pink", "Cougar Headset Phontum Pro Prix", "Cougar Headset Phontum S Pink", "Cougar Headset VM410 Tournament", "Cougar Microphone Screamer-X", "Keyboard Cougar 700K  Red Switch", "Keyboard Cougar AURORA S", "Cougar Keyboard Combo Combat RGB", "Keyboard Cougar LUXLIM", "Keyboard Cougar PURI TKL", "Keyboard Cougar PURI TKL RGB", "Keyboard Cougar PURI MINI", "Keyboard Cougar PURI MINI RGB", "Keyboard Cougar PURI RGB", "Keyboard Cougar Vantar", "Keyboard Cougar Vantar MX Blue Switch", "Keyboard Cougar VANTAR S", "Keyboard VANTAR S White", "Keyboard Cougar VANTAR AX PINK", "MOUSE  700M EVO eSPORTS", "MOUSE Air Blader", "MOUSE Dual Blader-800M", "MOUSE Minos X2", "MOUSE Minos XC", "MOUSE Minos XT", "MOUSE Minos XT Pink", "MOUSE Surpassion RX"],
-                "COUGAR MOUSE PAD": ["MOUSE PAD   ARENA   BLACK", "MOUSE PAD ARENA X", "MOUSE PAD ARENA  X PINK", "MOUSE PAD  CONTROL-EX  SMALL", "MOUSE PAD FREEWAY L", "MOUSE PAD FREEWAY M"],
-                "COUGAR GAMING CHAIRS & SOFA": ["Cougar Chair GAMING  ARGO", "Cougar Chair ARGO ONE Orange", "Cougar Chair ARGO ONE BLACK", "Cougar Chair ARMOR AIR", "Cougar Chair ARMOR AIR Black", "Cougar Chair ARMOR ELITE EVA", "Cougar Chair ARMOR EVO ROYAL", "Cougar Chair ARMOR ONE BLACK", "Cougar Chair ARMOR ONE EVA", "Cougar Chair ARMOR", "Cougar Chair ARMOR Black", "Cougar chair ARMOR ELITE", "Cougar chair ARMOR EVO M", "Cougar chair ARMOR EVO M Gold", "Cougar chair ARMOR EVO S", "Cougar chair ARMOR EVO S GOLD", "Cougar Chair ARMOR ONE", "Cougar Chair ARMOR ONE ROYAL", "Cougar Chair ARMOR S", "Cougar Chair ARMOR S BLACK", "Cougar Chair ARMOR S ROYAL", "Cougar stool CROSSER", "Cougar Chair EXPLORE", "Cougar Chair EXPLORE S", "Cougar Chair EXPLORE S BLACK", "Cougar Chair FUSION ORANGE", "Cougar Chair FUSION S", "Cougar Chair FUSION S Black", "Cougar chair HOTROD", "Cougar chair HOTROD BLACK", "Cougar chair HOTROD Royal VCT", "Cougar Chair NXSYS AERO", "Cougar Chair NXSYS AERO BLACK", "Cougar Chair OUTRIDER BLACK", "Cougar Chair OUTRIDER ( Orange )", "Cougar Chair OUTRIDER ROYAL", "Cougar Chair OUTRIDER S ( Orange )", "Cougar Chair OUTRIDER S ROYAL", "Cougar chair SPEEDER ONE", "Cougar Sofa FIDOM Gray", "Cougar Sofa FIDOM", "Cougar sofa MAGUS", "Cougar sofa MAGUS GRAY", "Cougar Chari Outrider S Black", "Cougar Sofa OVERLOAD", "Cougar Sofa RANGER PRO ROYAL", "Cougar Sofa RANGER Royal", "Cougar sofa RANGER ELITE Gold", "Cougar sofa RANGER ONE", "Cougar sofa RANGER ONE Gray", "Cougar chair TERMINATOR ELITE GOLD"],
-                "COUGAR GAMING DESK": ["COUGAR DESK  DEIMUS 120", "COUGAR DESK E-DEIMUS 120", "Cougar desk E-GRAV 160", "Cougar desk E-GRAV 180", "COUGAR DESK  E-MARS", "Cougar desk E-STAR 120", "Cougar desk E-STAR 140", "COUGAR DESK MARS", "COUGAR DESK  MARS 120CM", "COUGAR DESK MARS  PRO 150"],
-                "COUGAR ACCESSORIES": ["COUGAR CAMERA CYCLOPS", "Cougar Bungee Bunker", "Cougar Bungee Bunker RGB", "Cougar Headset Stand Bunker S", "Cougar Headset Stand Bunker S RGB", "Cougar docking DH07", "Cougar DOCKING DS10", "Cougar Case Accessory FV270 Luminous Turntable Black", "Cougar Case Accesory FV270 Luminous Turntable White", "Cougar MICROPHONE ARM FORTE", "Cougar MONITOR ARM DUO35", "FAN COUGAR 120MM ARGB BLACK", "FAN COUGAR 120MM ARGB WHITE", "FAN COUGAR 140MM ARGB BLACK", "FAN COUGAR 140mm ARGB PWM", "FAN COUGAR 140MM ARGB WHITE", "FAN COUGAR 140mm Reversed ARGB PWM"],
-                "GOODIE BAG": ["Goodie Bag 25 x 35 +8 cm* Orange", "GOODIE BAG 30X40+8 CM* Hijau Muda", "Goodie Bag 30 x 40+8 cm* Orange", "Goodie Bag 30 x 40+8 cm* Royal Blue", "GOODIE BAG 30X40+8CM * Black", "Goodie Bag 30x40+8CM  RED/ Merah", "Goodie Bag 30x40+8 cm* Yellow / Kuning", "Goodie Bag  Ukuran  XXL  * Putih Sablon", "Goodie Bag Black - 685mm x 395mm +130mm + 80 List", "TAS SPUINBOND 44X67.5+14(LIST) CM  - WHITE", "Goodie Bag 30 x 40+8 cm  Orange", "TAS SPUNBOND POLOS 44X76 CM", "Goodie Bag Box 38 x 50 +10 (List)cm  HITAM"],
-                "HOSE MONITOR": ["MONITOR HOSE 19\"", "MONITOR HOSE WARD 19\"", "MONITOR HOSE WARD s19  SLIM", "MONITOR HOSE WARD 22\"  GAMING FHD FLAT-75Hz", "MONITOR HOSE WARD 24\" GAMING FHD FLAT ~ 165Hz"],
-                "HOSE CABLE & UTP": ["CABLE HOSE CAT5E UTP 305M INDOOR Network Cable", "CABLE HOSE CAT5E  SFTP 305M", "CABLE HOSE CAT6 UTP 305M", "CABLE HOSE CAT6E UTP 305M INDOOR Network Cable", "CABLE HOSE CAT5E *FTP* 305M OUTDDOR Network Cable", "CABLE HOSE CAT6E *FTP* 305M OUTDDOR Network Cable"],
-                "HOSE POWER SUPPLY": ["ADAPTOR FOR MINI PC 15A,12VOLT", "POWER SUPPLY HOSE 2000WATT  w/ Cable Power", "POWER SUPPLY HOSE 225 WATT", "PSU 380WATT eHOSE", "PSU LEXGAMING SAVY550 (WHITE)  500WATT", "PSU LEXGAMING SAVY550 (BLACK)  500WATT", "PSU HOSE 380WATT FOR LYNE", "PSU LEXGAMING SAVY550 (BLACK) RGB ~ 500 WATT", "PSU LEXGAMING SAVY550 (WHITE) RGB ~ 500 WATT", "PSU LEXGAMING SAVY650 (WHITE) RGB ~ 600 WATT", "PSU HOSE HOP450", "PSU HOSE 450WATT"],
-                "HOSE SCREEN": ["SCREEN PROJECTOR  ELECTRIC  72\"  HOSE", "SCREEN PROJECTOR  TRIPOD   72\"  HOSE", "SCREEN PROJECTOR AUTO 100\"", "SCREEN PROJECTOR AUTO 120\""],
-                "HOSE ACCESORIES": ["ADAPATOR MONITOR HOSE WARD 19\"", "CABLE HDMI 1M", "CONVERTER AC TO DC  CABLE FOR MINI PC", "USB3.0  Cable", "Enclosure Case For  HDD/SSD  2,5\"  Silver Color", "ENCLOSURE Case For NVME 3.0 2280 Black Color", "FAN HOSE MW-120  12CM DOUBLE RING  ARGB BLACK", "FAN HOSE MW-120  12CM  ARGB WHITE", "FAN HOSE RGB Qi120", "FAN HOSE RGB Qi120 WHITE", "FAN HS SW120B PRO 12cm  ARGB - BLACK (SINGLE)", "FAN HS SW120W PRO  12cm  ARGB - WHITE (SINGLE)", "HEAT SINK NVME GEN4", "CABLE HOSE  PCI-E Spliter 8 PIN  Female to Dual 8 Pin Male (6+2) BRAIDED", "CABLE POWER  HOSE  FOR 2000WATT", "CABLE HOSE DUAL PSU SPLITTER ATX 24 PIN", "RJ45 CAT5 CONNECTOR  HOSE", "USB HOSE  PCI-E 1-16X  RISER  EXTENDER CARD  8 IC  Ver.009S Plus", "USB HOSE  PCI-E 1-16X  RISER  EXTENDER CARD 10 IC  Ver.012", "USB HOSE  PCI-E 1-16X  RISER  EXTENDER CARD  10 IC  Ver.013", "HOSE COOLER RGB - POSAIDON AM90", "KEYBOARD & MOUSE HOSE", "Lexa G Cabel pcie 4.0 riser VGA x16  200mm -White", "PART-12cm RGB  BAUT/SCREW", "Blister for 2.5\" sata", "FAN RGB 12CM STATIC (Fixed  Color)", "FAN HOSE  12CM RGB DYNAMIC ( BLACK MASTER )", "FAN HOSE SW-120 PRO  ARGB FAN 12CM (3 in 1) BLACK", "FAN HOSE 12CM RGB DYNAMIC  (BLACK SLAVE)", "FAN HOSE 12CM RGB DYNAMIC  ( WHITES SLAVE )", "FAN HOSE 12CM RGB DYNAMIC ( WHITE MASTER)", "FAN HOSE 12CM RGB DOUBLE RING", "FAN RGB 12CM STATIC WHITE (Fixed Color)", "Kit longdim blister (with heatsink) DDR4/DDR5", "Longdim blister (without heatsink)  DDR3 / DDR4", "Longdim blister (with heatsink) DDR4 /DDR5", "PART- OFFICE Black Structure", "SPARE PART mini CRUZZER Black right side panel", "SIDE PANEL ACRYLIX FOR CASE HOSE ESSENCE", "PART- SIDE PANEL TRANSPARAN FOR CASE AQUOZ", "PART-SIDE PANEL OFFICE ACRILIX", "PAR-SNOW Structure", "Sodim Blister DDR3 / DDR4", "USB CABLE  eHOSE", "SPARE PART - SIDE PANEL AQUARIX MINI Acrylix", "PSU HOSE 380WATT LYNAR", "Controller FAN 12CM RGB for HOSE", "Controller FAN 12CM RGB for HOSE WITH REMOTE", "SPAREPART-TEMPER GLASS FOR HOSE GLORI SHINE CASE", "FAN HOSE SW120 PRO V2  PWM  FAN 12Cm ARGB- White SINGLE"],
-                "HOSE CASE": ["CASE AQUARIX MINI  + 3x FAN Static RGB   BLACK", "CASE AQUARIX MINI + 3x FAN Static RGB    WHITE", "CASE ATX eHOSE", "CASE EHOSE MICRO SAMPLE", "CASE EHOSE MINI ITX", "CASE eHOSE SLIM", "CASE EHOSE MICRO GLORI V3", "CASE EHOSE MICRO GLORI V1", "CASE HOSE APOLOS", "CASE HOSE AQUOS  BLACK", "CASE HOSE AQUOS WHITE", "CASE ARTIX Black", "CASE ARTIX White", "CASE BOTEGA Black", "CASE BOTEGA White", "CASE HOSE GENIUS + 2x Fan 12 Cm RGB", "CASE HOSE GENIUS + 2X FAN 12CM STATIC/FIXED COLOR", "CASE HOSE GENIUS TRANSPARAN W/o FAN  (Tanpa FAN) + PSU", "CASE HOSE OCEAN BLACK", "CASE HOSE OCEAN WHITE", "CASE HOSE PANDORA  ( WHITE)", "CASE HOSE PANDORA (BLACK) TYPE-C USB", "CASE HOSE PANDORA (WHITE) TYPE-C USB", "CASE HOSE TRITHON +3xFan 12Cm RGB (W/O -Tanpa PSU)", "CASE HOSE APOLOS BLACK Type C  (M-ATX)", "CASE HOSE APOLOS WHITE Type C (M-ATX)", "CASE HOSE APOLOS WHITE (M-ATX)", "CASE HOSE  AQUARIX  Black", "CASE HOSE  AQUARIX  White", "CASE HOSE  MINI  C-167 BIG", "CASE HOSE MINI C-812 SMALL", "CASE CASTLE MINI BLACK + PSU +  3 FAN STATIC", "CASTLE MINI XS  BLACK + 3 FAN STATIC  W/O PSU", "CASTLE MINI WHITE + 3 FAN STATIC  W/O PSU", "CASE CASTLE MINI WHITE + PSU + 3 FAN STATIC", "CASE HOSE ESSENCE", "CASE HOSE e-TERNITY", "CASE Glori Shine HOSE", "CASE Glori Shine HOSE + 3x Fan 12Cm RGB", "CASE  HOSE OFF 1", "CASE HOSE OFF DUO", "CASE HOSE ORIION + 2 FAN STATIK", "CASE HOSE ORIION W/O FAN", "CASE HOSE ORIION  WHITE + 2 FAN STATIC", "CASE HOSE PANDORA WHITE ( ITX)", "CASE HOSE  SNOW", "CASE HOSE SNOW WHTE CRYSTAL ( TRANSPARAN )", "CASE ATX  LED HOSE", "CASE Micro Glori Game HOSE", "CASE Micro Glori V1  HOSE", "CASE Micro Glori V2  HOSE", "CASE Micro Glori V3 HOSE", "CASE Middle Glori Game HOSE", "CASE MINIITX HOSE C60X", "CASE HOSE TX PRIME", "CRUZZER X3G Black W/O FAN", "CRUZZER X3G White W/O FAN", "CASE HOSE  IN-02", "CASE HOSE ALLICE", "CASE HOSE CITY 1 USB 3.0", "CASE HOSE CITY 1", "CASE HOSE CITY 2", "CASE HOSE CRUZZER BLACK", "CASE HOSE CRUZZER WHITE", "CASE HOSE MINI CRUZZER Black", "CASE HOSE  ALMAZ Black + 2x FAN 12 CM RGB", "CASE HOSE LYNAR", "CASE HOSE LYNE", "CASE HOSE LYNE W/O PSU", "CASE HOSE MINI CRUZZER WHITE", "CASE HOSE MINI PC SAMPLE", "CASE HOSE OFFICE BLACK", "CASE HOSE OFFICE WHITE", "CASE HOSE LYNO SLIM", "FAN RGB 8CM STATIC (Fixed  Color)", "SPARE- CPU COOLING APPARATUS", "SPARE PART - Mini CASE sample"],
-                "HOSE VIDEO GRAPHIC CARD": ["Hose RX550 2GB DDR5", "Hose RX 550 4GB DDR5", "HOSE  RX580 8GB DDR5", "Hose GT220LP 1GB DDR3", "GT 240 2GB DDR3", "Hose GT240LP 1GB DDR3", "Hose GT 610LP 1GB DDR3", "Hose GT 610LP 2GB DDR3", "Hose GT 730LP 2GB DDR3", "Hose GT 730LP 4GB DDR3", "Hose GT 740 4GB  LP DDR3", "Hose GT740 4GB DDR5", "Hose GT740LP-2GB DDR3", "Hose GTX1060 6GB DDR5", "Hose GTX1660Ti 6GB DDR6", "Hose GTX750 2GB GDDR5", "Hose GTX 750 4GB GDDR5", "Hose GTX 750TI 4GB GDDR5", "Hose R7 240   4GB DDR5", "Hose  R7 240LP 4GB DDR3", "Hose R7 350   2GB DDR5"],
-                "HOSE MOTHERBOARD": ["MB.HOSE B250 M.2", "MB.B65 BTCx8 Hose", "MB. Hose B75 Mining x8", "MB.HOSE B760 M.2", "MB.HOSE B85-G11", "MB.Hose  BTC- B250  Mining 12 PCI-E", "MB.HOSE B85 MINING EXPERT X8", "MB.Hose Falcon H61", "MB.Hose Falcon H61 M.2", "MB.HOSE H110 STONE", "MB.HOSE H110 STONE + M.2", "MB.HOSE H510", "MB.HOSE H610", "MB.Hose  H81 Centaur", "MB.HOSE H81 + M.2", "MB.HOSE J4125", "MB.HOSE MINI ITX  B250 M.2", "MB.HOSE MINI ITX H310", "MB.HOSE MINI ITX- H610", "MB.HOSE MINI ITX B365", "MB.HOSE MINI ITX H81", "MB.Hose Tornado H55", "MB.Hose Tornado H55 M-Sata", "MB.Hose Tornado H55 M.2 NVME", "MB. Hose  X79 M.2", "MB. Hose X99 DDR4", "MB.HOSE B660 PRO M.2"],
-                "HOSE  ALL IN ONE MONITOR PC": ["Hose  DG2316 - All in one PC Monitor 23.6\"", "Hose All in One Monitor 23.8\""],
-                "HOSE CHAIRS": ["Office Chair"],
-                "eHOSE * FIBER CABLE": ["APC (ANGLE PHYSICAL CONTACT) Ferrule", "UPC (ULTRA-PHYSICAL CONTACT) Ferrule", "CONNECTOR  METAL FOR SC APC  * GREEN COLOR", "CONNECTOR  METAL FOR SC UPC  * BLUE COLOR", "CONECTOR UPC-UPC", "HORIZONTAL FIBER OPTIC JOINT CLOSURE 12 CORES", "HORIZONTAL FIBER OPTIC JOINT CLOSURE 24 CORES", "Mini PLC splitter 1*4 SC/UPC", "Mini PLC splitter 1*8 SC/UPC", "OPTIC DISTRIBUTION BOX 8 CORES  with 1*8 cassette PLC splitter", "OPTIC DISTRIBUTION BOX 16 CORES  with 1*16 cassette PLC splitter", "Dead end 16-25mm Clamp Lengkap", "Dead end 25-50mm Clamp Lengkap", "OPTICAL DISTRIBUTION FRAME (ODF) 48 CORES, Drawer-Type, 2Ublack, Simplex, SC/UPC", "OPTICAL DISRIBUTION FRAME (ODF) 96 CORES, Drawer-Type, 4Ublack, Simplex, SC/UPC", "OPTIC DISTRIBUTION POINT 16 CORES Grey ABS, with 9pcs adapter,1:16 SC/UPC PLC slplitter", "OPTIC DISTRIBUTION POINT 32C 16 port, 1:16 SC/UPC PLC slplitter", "OPTIC DISTRIBUTION POINT   8 CORES Grey ABS, with 9pcs adapter,1:8 SC/UPC PLC slplitter", "Suspension Corong", "Strain Dead End  Clamp Plastic", "FIBER OPTIC CABLE ADSS-24 CORE 4KM  (4 TUBE)", "FIBER OPTIC CABLE ADSS-48 CORE 4KM", "FIBER OPTIC CABLE ADSS-96 CORE 4KM", "CABLE HOSE FTTH (GALVANIZED STEEL)  G657A1 1Fiber LSZH Drop cable *(1 CORE) G657A1+2*0.45mm steel wire +1.0mm galvanized steel wire, BLue  LSZH  1km/ Roll /Carton", "CABLE HOSE FTTH (GALVANIZED STEEL)  G657A1 2 Fiber LSZH Drop cable *(2 CORE) G657A1 +2*0.45mm steel wire +1.0mm galvanized steel wire, BLue LSZH 1km/Roll /Carton", "CABLE HOSE FTTH (GALVANIZED STEEL)  G657A1 4Fiber LSZH Drop cable *(4 CORE) G657A1 +2*0.45mm steel wire +1.0mm galvanized steel wire, BLue LSZH 1km/Roll /Carton", "FIBER OPTIC CABLE FTTH DROP  *1 CORE GEPENG  * 2*0.4 steel wire 1KM,Black Carton,Fiberhome", "FIBER OPTIC CABLE FTTH DROP  *1 CORE  * 3 steel wire 1.0mm -1KM", "FIBER OPTIC CABLE FTTH DROP  *1 CORE  * 3 steel wire 1.0mm -500M", "FIBER OPTIC CABLE FTTH DROP  *1 CORE PREMIMUM * 3 steel wire 1.2mm -1KM", "FIBER OPTIC CABLE FTTH DROP  *2 CORE  * 3 steel wire 1.0mm -1KM", "FIBER OPTIC CABLE FTTH DROP  *2 CORE PREMIUM  * 3 steel wire 1mm -2KM", "FIBER OPTIC CABLE FTTH DROP  *4 CORE  * 3 steel wire 1mm -1KM", "FIBER OPTIC CABLE FTTH DROP  *4 CORE PREMIUM  * 3 steel wire 1.20mm -1KM", "FIBER OPTIC CABLE FTTH DROP  *4 CORE PREMIUM  * 3 steel wire 1mm -2KM", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 100M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 150M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 200M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 250M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 300M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 400M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 500M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 50M", "CABLE HOSE Fiber Optic Outdoor * (1 CORE)  UPC  SC-SC * 80M", "CABLE HOSE Fiber Optic Outdoor * (2 CORE)  UPC  SC-SC * 100M", "CABLE HOSE Fiber Optic Outdoor * (2 CORE)  UPC  SC-SC * 150M", "CABLE HOSE Fiber Optic Outdoor * (2 CORE)  UPC  SC-SC * 200M", "CABLE HOSE Fiber Optic Outdoor * (2 CORE)  UPC  SC-SC * 300M", "FIBER OPTIC CABLE 2 CORE JELLY TUBE GJYXTCH 1KM  (PREMIUM)", "FIBER OPTIC CABLE 2 CORE JELLY TUBE GJYXTCH 2KM (PREMIUM)", "FIBER OPTIC CABLE 4 CORE JELLY TUBE GJYXTCH ,1KM  (PREMIUIM)", "FIBER OPTIC CABLE 4 CORE JELLY TUBE GJYXTCH 2KM  (PREMIUIM)", "FIBER OPTIC CABLE 6 CORE JELLY TUBE GJYXTCH ,1KM  (PREMIUIM)", "FIBER OPTIC CABLE 6 CORE JELLY TUBE GJYXTCH 2KM  (PREMIUIM)", "FIBER OPTIC CABLE 8 CORE JELLY TUBE GJYXTCH 1KM  (PREMIUM)", "FIBER OPTIC CABLE 8 CORE JELLY TUBE GJYXTCH 2KM  (PREMIUM)", "FIBER OPTIC CABLE 12 CORE JELLY TUBE GJYXTCH 1KM (PREMIUM)", "FIBER OPTIC CABLE 12 CORE JELLY TUBE GJYXTCH 2KM (PREMIUIM)", "FIBER OPTIC CABLE FIG8  ARMOR  GYXTC8S-6CORE 2KM", "FIBER OPTIC CABLE FIG8  ARMOR  GYXTC8S-8CORE 2KM", "FIBER OPTIC CABLE  FIG8  ARMOR  GYXTC8S-12 CORE2KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-4 CORE 1KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-4 CORE 2KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-6 CORE 1KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-6 CORE 2KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-8 CORE 2KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-12 CORE 1KM", "FIBER OPTIC CABLE MINI FIG8  GYXTC8Y-12 CORE 2KM", "FIBER OPTIC CABLE ARMOURED GYXTW 4 CORE 2KM", "FIBER OPTIC CABLE ARMOURED GYXTW  12CORE 2KM", "FIBER OPTIC CABLE MINI ADSS-4 CORE 2KM", "FIBER OPTIC CABLE MINI ADSS-6 CORE 2KM", "FIBER OPTIC CABLE MINI ADSS-8 CORE 2KM", "FIBER OPTIC CABLE MINI ADSS-12 CORE 2KM", "FIBER OPTIC CABLE MINI ADSS-12 CORE 4KM", "FIBER OPTIC CABLE MINI ADSS-24 CORE 2KM", "FIBER OPTIC CABLE MINI ADSS-24 CORE 4KM", "Patchcord  Gepeng  SC SC UPC FTTH FO 1 METER", "Patchcord  Gepeng  SC SC UPC FTTH FO 2 METER", "Patchcord Gepeng  SC SC UPC FTTH FO 3 METER", "PIGTAIL FIBER CABLE  SC 1,5 M"],
-                "HS AIR PRO": ["CABLE HS AIR PRO CAT6E UTP 305M INDOOR Network Cable", "CABLE HS AIR PRO CAT6  *FTP* 305M OUTDDOR Network Cable", "CABLE HS AIR PRO Fiber To The Home  FTTH G657A1 1Fiber LSZH Drop cable * 1core G657A1 +2*0.45mm steel wire +1.2mm galvanized steel wire, BLue  LSZH  1km/ Roll /Carton", "CABLE HS AIR PRO Fiber To The Home  FTTH G657A1 2Fiber LSZH Drop cable * 2core G657A1 +2*0.45mm steel wire +1.0mm galvanized steel wire, BLue  LSZH  1km/ Roll /Carton"],
-                "HOSE MEMORY": ["HOSE DDR3  8GB 1600Mhz", "HOSE DDR3  8GB 1600Mhz SODDIM", "HOSE DDR3L 8GB 1600Mhz Soddim (low Voltage)", "HOSE DDR4 16GB 3200Mhz With Heatsink", "HOSE DDR4 32GB 3200MHz With Heatsink", "HOSE DDR4  8GB 3200Mhz With Heatsink", "HOSE DDR4  8GB 3200Mhz Soddim", "HOSE DDR5 8GB 4800Mhz SODDIM", "HOSE DDR5 8GB 5600MHz"],
-                "HOSE STORAGE": ["HOSE  M.2 2280  128GB", "HOSE  M.2 2280  256GB", "HOSE  M.2 2280  512GB", "HOSE NVMe PCIe 3.0 128GB", "HOSE NVMe PCIe 3.0 1TB", "HOSE NVMe PCIe 3.0 256GB", "HOSE NVMe PCIe 3.0 512GB", "HOSE NVMe PCIe 4.0 512GB", "HOSE NVMe PCie 4.0 512GB SKYHAWK", "HOSE SSD SATA3 128GB  BLACK", "HOSE SSD SATA3 128GB WHITE", "HOSE SSD SATA3 1TB  WHITE", "HOSE SSD SATA3 256GB BLACK", "HOSE SSD SATA3 2TB BLACK", "HOSE SSD SATA3 512GB  BLACK", "HOSE SSD SATA3 512GB WHITE", "HOSE SSD SATA3 1TB BLACK"],
-                "INSULATION": ["Shine bubble 4mm x 1.2m x 25m Premium Lite", "BUBBLE ACTIVEFOIL 8MM X 1.2M X 25MTR", "BUBBLE ACTIVE LITE 4MM X 1.2 M X 25 MTR", "BUBBLE POLOS 4mm x 1.2m x25m", "SPC FLOOR 1220X183X4mm HM-505", "WPC WALL PANEL 210X20X3000mm M53102-308", "SHINE ALUFOAM DOUBLE 8 MM X 1M X 25MTR", "Shine bubble 4mm x1.22m x25 m Ekonomis", "TAPE METALIZE 4.8CM x 50y", "WOVEN DOUBLE 1.2X50 MTR (XP)", "Woven Double ST Foil 1.2x50 mtr", "Woven Single ST Foil 1.2 x 50 mtr"],
-                "INSUL-ROOFING": ["Bubble Activefoil 4mm x 1.2m x 25m", "Shine bubble 8mm x 1.2m x 25m  Premium lite", "SHINE Thermal 4 mm x 1.2 x 25 m"],
-                "LEXA GAMING ACCESORIES": ["Lexa G Cable pcie 4.0 riser VGA x16  200mm -Black", "LEXA GAMING AIO Cooler HYDROLUX360 ARGB - BLACK", "LEXA GAMING AIO Cooler HYDROLUX360 ARGB - WHITE", "LEXA GAMING AIO Cooler AIOLUX 240 Black", "LEXA GAMING AIO Cooler AIOLUX 240 White", "LEXA GAMING CPU Cooler ATHENA 50", "Turntable Rotating Display 360 Degree  42cm diameter"],
-                "CASE LEXA GAMING": ["CASE LEXA GAMING VAXTATOR"],
-                "PATRIOT MEMORY": ["MEMORI SODDIM DDR3L 4GB TEAM", "MEMORI SODDIM DDR3L 8GB SILICON POWER", "RAGE LITE 32GB USB 3.2 GEN I", "PUSH+ 128GB USB 3.2 GEN.1", "PUSH+  64GB USB 3.2 GEN.1", "EP Series 128GB High Endurance  V30 MicroSDXC Flash Card (with SD Adapter)", "EP Series 256GB A1 / V30 MicroSDXC Flash Card (with SD Adapter)", "EP Series 32GB High Endurance V30 MicroSDXC Flash Card (with SD Adapter)", "EP Series 512GB A1 / V30 MicroSDXC Flash Card (with SD Adapter)", "EP Series 64GB High Endurance  V30 MicroSDXC Flash Card (with SD Adapter)", "EP Series 64GB A1 / V30 MicroSDXC Flash Card (with SD Adapter)", "LX Series 128GB C10 MicroSDXC Flash Card", "LX Series 32GB C10 MicroSDHC Flash Card", "LX Series 64GB C10 MicroSDXC Flash Card", "Viper VP4300 1TB M.2 2280 PCIe / up tp 7400MB R & 5500MB/s W", "Viper VP4300 2TB M.2 2280 PCIe / up tp 7400MB R & 6800MB/s W", "VPN110 1TB M.2 2280 PCIE/ up to 3300MB R & 3000MB W", "VPN110 512GB M.2 2280 PCIE/ up to 3300MB R & 3000MB W", "DDR3 1333/ CL9 - 4GB (1x4GB)- 256x8 SODIMM", "DDR3 1600/ CL11 - 4GB (1x4GB)- 256x8", "DDR3 1600/ CL11 - 4GB (1x4GB)- 512x8 SODIMM", "DDR3 1600/ CL11 - 8GB (1x8GB)- 512x8", "DDR3 1600/ CL11 - 8GB (1x8GB)- 512x8 SODIMM", "DDR4 2666/ CL19 - 16GB (1x16GB)- 1Gx8 SODIMM", "DDR4 3200/ CL22 - 16GB (1x16GB)- 1Gx8 SODIMM", "DDR4 2666/ CL19 - 32GB (1x32GB)- 2Gx8 SODIMM", "DDR4 2666/ CL19 - 4GB (1x4GB)- 512x8", "DDR4 2666/ CL19 - 4GB (1x4GB)- 512x8 SODIMM", "DDR4 2666/ CL19 - 4GB (1x4GB)- 256x16  SODIMM", "DDR5 4800/ CL40 - 16GB (2x8GB)- Kit", "DDR4 2666/CL19/ New Heat Sink - 16GB (2x8GB) Kit", "DDR4 3200/ CL22/ New Heat Sink - 16GB (2x8GB)- Kit", "DDR4 2666/CL19/ New Heat Sink - 4GB (1x4GB)- 512x8", "SL Signature  Premium DDR5 16GB 4800MHz (2x8GB) UDIMM H/S KIT", "SL Signature Premium DDR5 32GB 4800MHz UDIMM 2Gx8 2R H/S", "SIGNATURE PREMIUM DDR5 32GB 4800MHz CL40 1.1V (2x16GB) UDIMM H/S KIT", "P210 128GB SATA III", "P210 1TB SATA III", "P210 256GB SATA III", "P210 512GB SATA III", "P300 128GB M.2 2280 PCIE", "P300 256GB M.2 2280", "P400 Lite 1000GB M.2 2280 PCIe Gen4 x4 SSD", "P400 Lite 500GB M.2 2280 PCIe Gen4 x4 SSD", "P400 1TB M.2 2280 PCIE/ up to 5000MB R & 4800MB W", "P400 512GB M.2 2280 PCIE/ up to 5000MB R &3300MB W", "Patriot Viper RGB  DDR4 4133 CL19  - BLACK  - 16GB (2x8GB) Kit", "Patriot Viper Steel  DDR4 3200 CL18 - 16GB (1x16GB) SODIMM", "Patriot Viper Steel  DDR4 3200 CL16  - 8GB (2x4GB) Kit", "Patriot Viper Steel RGB DDR4 3200MHz CL18 - 16GB (2 x 8GB) Kit", "Patriot Viper Steel RGB DDR4 3600MHz CL20 - 16GB (2 x 8GB) Kit", "Patriot Viper Steel RGB DDR4 4133MHz CL20 - 16GB (2 x 8GB) Kit", "Patriot Viper Steel RGB DDR4 3200MHz CL18 - 8GB (1 x 8GB)", "VIPER VENOM DDR5 6200 / CL40  - 32GB (2x16GB) Kit"],
-                "PERIPHERAL LAINNYA": ["ADAPTOR FOR MINIPC 10A,12VOLT", "BVX1200LI-MS  APC Easy UPS BVX 1200VA, 230V, AVR, Universal Sockets", "Atap ST-1000 0.30 mm tct merah  1,8 m x 21 lbr = 37,8M", "GOODIE BAG 30X40+8 CM* Biru / Blue", "GOODIE BAG 30X40+8 CM* Coklat/Brown", "GOODIE BAG 30X40+8 CM* Magenta", "GOODIE BAG 30X40+8 CM* Orange", "GOODIE BAG 30X40+8 CM* Royal Blue", "GOODIE BAG 30X40+8 CM* Unggu / Purple", "BVX700LUI-MS   APC Easy UPS BVX 700VA, 230V, AVR, USB Charging,Universal Sockets", "TRENDNET RJ-11/RJ-45 CRIMP CUT STRIP TOOL", "DH-HAC-B1A59P  CCTV DAHUA 5MP Outdoor", "DH-HAC-T1A59P CCTV DAHUA 5MP Indoor FULL COLOR", "DH-XVR1B08-I  Dahua XVR Recorder 8 Channel New Item", "D-LINK  DEM-310GT", "FAN LGA 1155/51/50", "FAN SLIM LGA 1150/51/55", "HDD WD PURPLE 3.5 4TB", "Dahua TV 43\" FHD", "MIKROTIK CLOUD ROUTER SWITCH CRS326-24G-2S+RM", "VGEN RAM 8GB , PC 12800/1600 MHZ", "All IN ONE AIO PC Core i3 generasi 2. 4gb. 1tb. 23.5\"  OS Linux", "KERTAS MG//PE-250x270mm POLOS", "PLAKBAN FOIL 4.8cm x 40 yard", "Plat Strip 5 cm x 30 mtr", "PSU MAGIX 500W", "UPS HIKVISION DS-UPS3000", "USB CABLE TYPE C  FOR LYNAR", "CONNECTOR CAT 5 EZ GOLD @ IS I 50PCS", "WD40EFZX WD Red™ Plus 4T WD Red™ 3.5 SATA"],
-                "PROCESSOR INTEL": ["INTEL I3-10105F LGA1200  BOX", "INTEL I3-2120", "INTEL I3-2120T", "INTEL I3-4130 TRAY", "INTEL I3-4160", "INTEL I3-550", "INTEL I3-6100", "INTEL I3 7100", "INTEL I3-9100F", "INTEL I5-4690 TRAY", "INTEL I5-10400 TRAY +FAN", "INTEL I5-4590 TRAY 1150  3.3GHZ", "i5-650 tray", "INTEL I5-750 TRAY", "INTEL I5-760 TRAY", "INTEL I7 2600", "INTEL I7-860 TRAY", "INTEL I7-8700 TRAY", "INTEL XEON E5-2690", "INTEL XEON E5-2690V3", "INTEL G3250", "INTEL G3260"],
-                "RAPOO": ["C500 Black 2160P webcam", "NK1800.US.BLACK  ~  WiredKeyboardUS_BLACK", "N200.BLACK  ~  Optical Mouse Black", "X120Pro.US.BLACK  ~  WiredOpticalMouse&KeyboardComboUS_BLACK (NK1800+N200)"],
-                "SANKEN": ["ESA-05 / ESC-05 : SANKEN -  AC  1/2 PK --> TANPA PIPA", "ESA-09 / ESC-09 : SANKEN -  AC  1 PK  --> TANPA PIPA", "SKV-171 FBK"],
-                "TP-LINK & TOTOLINK": ["TAPOO P115 (1-PACK)  Mini Smart Wi-Fi Socket, Energy Monitoring", "TAPOO S210  Smart Light Switch, 1-Gang 1-Way", "TAPOO S220  Smart Light Switch, 2-Gang 1-Way", "G300L -  XPON 300MBPS  ONU OPTICAL MODEM", "GH1103 - 300Mbps GPON ONU Optical Modem", "X5000R  -  AX1800 Wireless Dual Band Gigabit Router", "X2000R", "\"T6 -   AC1200 Wireless Dual Band fast Mesh Router, 2 sets in 1,3*FE Ports\"", "A3002R AC1200 WIRELESS DUAL BAND GIGABYTE ROUTER", "A2004NS  -  AC1200 Wireless Dual Band Gigabit NAS Router", "A720R - AC1200 Wireless Dual Band Router", "A950RG -  AC1200 Wireless Dual Band Router with Gigabit WAN", "A3002RU", "X6000R  AX3000 Dual Band 11AX Wireless Router", "N100RE", "N200RE V4", "N350RT", "N600R - 600Mbps Wireless N Router", "N300RT", "N355RT", "N200RE  V5", "EX200 -  300Mbps Wireless N Range Extender", "U1000", "N150UA 150MBPS WIRELESS N USB ADAPTER", "N150USM", "A650USM -  AC650 Wireless Dual Band USB Adapter", "\"N300UM  -  300Mbps Wireless N USB Adapter 1* WPS button\"\"\"", "PX1000", "U100", "S505  5 PORT 10/100MBPS DESKTOP SWITCH", "S808  8 PORT 10/100 MBPS SWITCH", "SG24  - 24-PORT GIGABIT MULTI-FUNCTION SWITCH", "SG24D  24-Port Gigabit Desktop/Rackmount Switch", "S808G", "S505G", "\"CP350 -300 Mbps 2.4Ghz Wireless N Outdoor AP/ClientOutdoor design,\"", "\"CP450  - 450 Mbps 5Ghz Wireless N Outdoor AP/Client Outdoor design,\"", "CP300", "CA3000X-POE  -  AX30006 Wireless Dual band Celling AP", "CA1200-PoE -AC1200 WIRELESS DUAL BAND CELIING MOUNT AP", "EAP615-Wall   AX1800 Wall-Plate Dual-Band Wi-Fi 6 Access Point", "\"WA300 -  300Mbps In-wall Wireless Access Point Supports 802.3af PoE\"", "AC500", "U1003", "AIROMEMO N1  -PERSONAL/HOME CLOUD Server", "MS-105  5-port 10/100M mini Desktop Switch, 5 10/100M RJ45 ports, Plastic case", "MS105G  5-Port 10/100/1,000 Mbps Desktop Switch", "MS-108   8-port 10/100M mini Desktop Switch, 8 10/100M RJ45 ports, Plastic case", "MS108G  8-Port 10/100/1,000 Mbps Desktop Switch", "TL-SG1008MP 8-Port Gigabit PoE+ Switch, 8 Gigabit RJ45 Ports, 802.3at/af, 126W PoE Power", "TL-SG1016D  16-Port Gigabit Switch, 16 Gigabit RJ45 Ports,", "TL-SG1024D  24-Port Gigabit Switch, 24 Gigabit RJ45 Ports, 1U 13-inch Rack-mountable Steel Case", "EAP110  2.4GHz N300 Ceiling Mount Access Point", "EAP115  2.4GHz N300 Ceiling Mount Access Point, Qualcomm, 1 10/100Mbps LAN", "EAP245  AC1750 Dual Band Ceiling Mount Access Point,", "EAP653  AX3000 Ceiling Mount Dual-Band Wi-Fi 6 Access Point", "MU6H  AC650 High Gain Wi-Fi USB Adapter", "MW150US  N150 Wireless Nano USB Adapter, Nano Size, USB 2.0", "MW300UM  300Mbps Wireless N Mini USB Adapter, Realtek, Mini Size, 2T2R, 2.4GHz, 802.11b/g/n, USB 2.0, 2 internal antennas", "TL-WN722N 150Mbps High Gain Wi-Fi USB Adapter SPEED: 150 Mbps at 2.4 GHz", "TL-WN725N  150Mbps Nano Wi-Fi USB Adapter", "\"VIGI C220I(4mm)  2MP Dome Network Camera SPEC:H.265+/H\"", "\"VIGI C240(2.8mm)  4MP Full-Color Dome Network CameraS\"", "\"VIGI C240(4mm)  4MP Full-Color Dome Network Camera SPE\"", "\"VIGI C250(2.8mm)  5MP Full-Color Dome Network CameraS\"", "\"VIGI C320I(2.8mm)  2MP Outdoor Bullet Network CameraS\"", "VIGI C340(2.8mm)  4MP Outdoor Full-Color Bullet Networ", "VIGI C340(4mm)  4MP Outdoor Full-Color Bullet Network", "\"VIGI C340I(2.8mm)  4MP Outdoor Bullet Network CameraS\"", "VIGI C540(4mm)  4MP Full-Color Pan/Tilt Network Camera", "VIGI C540-4G  4MP Outdoor Full-Color 4GPan Tilt Networ", "VIGI C540V  4MP  Dual-Lens Varied Focal Full-Color PT", "\"VIGI NVR1008H  8 Channel Network Video RecorderSPEC:\"", "\"VIGI NVR1016H  16 Channel Network Video RecorderSPEC:\"", "\"VIGI NVR2016H  16 Channel Network Video RecorderSpec:\"", "\"VIGI NVR4032H  32 Channel Network Video RecorderSPEC:\"", "Archer AX12   AX1500 Dual-Band Wi-Fi 6 Router", "Archer C54  AC1200 Dual-Band Wi-Fi Router SPEED: 300 Mbp", "TL-WN881ND  300Mbps Wi-Fi PCI Express Adapter", "TL-WR840N N300 Wi-Fi Router,  300Mbps at 2.4GHz,  5 10/100M Ports,  2  antennas, Router/Access Point", "MS105GP 5-Port Gigabit Desktop Switch with  4-Port PoE+", "MS106LP  6-Port 10/100 Mbps Desktop Switch with 4-Port PoE+ 2× 10/100 Mbps Non-PoE Ports", "MS108GP 8-Port Gigabit Desktop Switch with 7 PoE+  1× Gigabit Non-PoE Ports", "MS110P 10-Port 10/100Mbps Desktop Switch with 8-Port PoE", "TL-SG1210P 10-Port Gigabit Desktop Switch with 8-Port PoE+", "TL-SL1311P  8-Port 10/100Mbps + 3-Port Gigabit Desktop S", "\"TL-MR105  300Mbps Wireless N 4G LTE RouterBuild-In 150M\""],
-                "XYZ CASE & MONITOR": ["CASE  XYZ  OFFICE  RUSH", "CASE XYZ XL5", "CASE XYZ XL7", "MONITOR   X-Eye19  (Monitor LED 19\")", "MONITOR   X-Eye22  (Monitor LED 22\")", "MONITOR   X-eYE s19    (Monitor SLIM LED 19\")"]
-            };
-
-            itemSelectors.forEach(selector => {
-                for (const category in itemData) {
-                    const optgroup = document.createElement('optgroup');
-                    optgroup.label = category;
-                    itemData[category].forEach(item => {
-                        const option = document.createElement('option');
-                        option.value = item;
-                        option.textContent = item;
-                        optgroup.appendChild(option);
-                    });
-                    selector.appendChild(optgroup);
-                }
-            });
-        });
-    </script>
 </body>
 </html>
-
